@@ -34,11 +34,36 @@
 
 (require 'dash)
 
-(defun mf/mirror-region-in-multifile (beg end &optional multifile-buffer)
+(defvar mf--changed-overlays nil)
+(make-variable-buffer-local 'mf--changed-overlays)
+
+(defun delete-orphan-overlays ()
+  (--each (overlays-in (point-min) (point-max))
+    (-when-let (twin (overlay-get it 'twin))
+      (when (overlay-buffer twin)
+	(delete-overlay it)))))
+
+(defun clear-garbage-overlays ()
+  ;;remove any unlinked overlays from the buffer and our data structures
+  (setq mf--changed-overlays (-filter #'overlay-buffer mf--changed-overlays)))
+
+(defun mf/mirror-region-in-multifile (beg end &optional multifile-buffer &optional heading)
   (interactive (list (region-beginning) (region-end)
                      (when current-prefix-arg
                        (read-buffer "Mirror into buffer: " "*multifile*"))))
+
+  (when (string= "*multifile*" (buffer-name (current-buffer)))
+    (error "you probably don't want to mirror a mirror into the same buffer"))
+
   (deactivate-mark)
+
+  ;;sometimes deleted overlays accumulate in mf--changed-overlays and cause Bad Things to Happen
+  (clear-garbage-overlays)
+  ;;when there is no multifile buffer, any overlays we have are garbage
+  (when (not (get-buffer "*multifile*"))
+    (setq mf--changed-overlays nil)
+    (remove-overlays))
+
   (let ((buffer (current-buffer))
         (mode major-mode))
     (switch-to-buffer-other-window (or multifile-buffer "*multifile*"))
@@ -52,6 +77,19 @@
 
 (unless multifiles-minor-mode-map
   (setq multifiles-minor-mode-map (make-sparse-keymap)))
+
+(defun mf--limited-undo ()
+  (interactive)
+  (-if-let (o (-some-> (point) (overlays-at) (car)))
+      (save-excursion
+        (deactivate-mark)
+        (goto-char (overlay-start o))
+        (mark)
+        (goto-char (overlay-end o))
+        (undo))
+    (error "Undo in no overlay is probably not what you want")))
+
+(define-key multifiles-minor-mode-map [remap undo] 'mf--limited-undo)
 
 (define-key multifiles-minor-mode-map (vector 'remap 'save-buffer) 'mf/save-original-buffers)
 
@@ -73,21 +111,110 @@
   "A minor mode for the *multifile* buffer."
   nil "" multifiles-minor-mode-map)
 
-(defun mf--add-mirror (buffer beg end)
-  (let (contents original-overlay mirror-overlay)
+(defvar multifiles-heading-map nil)
+(unless multifiles-heading-map
+  (setq multifiles-heading-map (make-sparse-keymap)))
+
+;;from the header, delete both the mirrored section and the header itself
+(defun mf--header-delete ()
+  (interactive)
+  (let ((o (-some-> (point) overlays-at car)))
+    (-some-> o
+             (overlay-get 'mirror)
+             (mf--remove-mirror))
+    (delete-overlay o)
+    (beginning-of-line)
+    (delete-region (point) (line-end-position))))
+
+;;delete/resurrect the mirror below this header
+(defun mf--header-cycle ()
+  (interactive)
+  (let* ((o (-some-> (point) overlays-at car))
+         (mirror (overlay-get o 'mirror)))
+    (if (and mirror (overlay-buffer mirror))
+        (progn
+          (mf--remove-mirror mirror)
+          (overlay-put o 'mirror nil))
+      (save-excursion
+        (beginning-of-line)
+        (search-forward "/")
+        (overlay-put o 'mirror (mirror-definition t))))))
+
+(defun mf--header-next ()
+  (interactive)
+  (let ((bol (save-excursion (beginning-of-line) (point))))
+    (when (= bol (point))
+      (forward-char))
+    (when (search-forward ";; ==" nil t)
+      (beginning-of-line))))
+
+(defun mf--header-prev ()
+  (interactive)
+  (let ((orig-point (point)))
+    (when
+        (save-excursion
+          (beginning-of-line)
+          (looking-at ";; =="))
+      (previous-line))
+    (when (not (search-backward ";; ==" nil t))
+      (goto-char orig-point))))
+
+(defun mf--header-goto-source ()
+  (interactive)
+  (-when-let (o (-some-> (point) overlays-at car (overlay-get 'mirror)))
+    (switch-to-buffer-other-window (overlay-get o 'backing-buffer))
+    (goto-char (overlay-start (overlay-get o 'twin)))))
+
+(define-key multifiles-heading-map (kbd "q") 'mf--header-delete)
+(define-key multifiles-heading-map (kbd "TAB") 'mf--header-cycle)
+(define-key multifiles-heading-map (kbd "n") 'mf--header-next)
+(define-key multifiles-heading-map (kbd "p") 'mf--header-prev)
+(define-key multifiles-heading-map (kbd "g") 'mf--header-goto-source)
+
+(define-key multifiles-minor-mode-map (kbd "C-c n") 'mf--header-next)
+(define-key multifiles-minor-mode-map (kbd "C-c p") 'mf--header-prev)
+
+(defun create-header-overlay (beg end)
+  (let ((o (make-overlay beg end nil nil nil)))
+    (overlay-put o 'type 'mf-heading)
+    (overlay-put o 'evaporate t)
+    (overlay-put o 'face font-lock-keyword-face)
+    (overlay-put o 'keymap multifiles-heading-map)
+    o))
+
+(defun mf--add-mirror (buffer beg end &optional heading &optional right-here)
+  (let (contents original-overlay mirror-overlay heading-overlay)
     (mf--add-hook-if-necessary)
     (with-current-buffer buffer
+      (delete-orphan-overlays)
       (mf--add-hook-if-necessary)
       (setq contents (buffer-substring beg end))
       (setq original-overlay (create-original-overlay beg end)))
+    (if right-here
+        (progn (end-of-line) (newline))
+      (end-of-buffer)
+      ;;right-here means a restore, so we already have a heading
+      (when heading
+        (setq heading-overlay (mf--insert-heading heading))))
     (mf---insert-contents)
     (setq mirror-overlay (create-mirror-overlay beg end))
+    (overlay-put mirror-overlay 'backing-buffer buffer)
     (overlay-put mirror-overlay 'twin original-overlay)
-    (overlay-put original-overlay 'twin mirror-overlay)))
+    (overlay-put original-overlay 'twin mirror-overlay)
+    (when heading-overlay
+      (overlay-put heading-overlay 'mirror mirror-overlay))
+    mirror-overlay))
+
+(defun mf--insert-heading (heading)
+  (let ((hdr-begin (point))
+        (hdr-end (progn (insert heading) (point))))
+    (prog1
+        (create-header-overlay hdr-begin hdr-end)
+      (newline))))
 
 (defun mf---insert-contents ()
-  (end-of-buffer)
-  (newline)
+  ;(end-of-buffer)
+  ;(newline)
   (setq beg (point))
   (insert contents)
   (setq end (point))
@@ -122,9 +249,6 @@
     (overlay-put o 'insert-behind-hooks '(mf--on-modification))
     o))
 
-(defvar mf--changed-overlays nil)
-(make-variable-buffer-local 'mf--changed-overlays)
-
 (defun mf--on-modification (o after? beg end &optional delete-length)
   (when (not after?)
     (when (mf---removed-entire-overlay)
@@ -139,7 +263,10 @@
 
 (defun mf--update-twins ()
   (when mf--changed-overlays
-    (-each mf--changed-overlays 'mf--update-twin)
+    (-each mf--changed-overlays
+      (lambda (o)
+        (when (and o (overlay-buffer o))
+          (mf--update-twin o))))
     (setq mf--changed-overlays nil)))
 
 (defun mf--remove-mirror (o)
@@ -173,8 +300,7 @@
       (save-excursion
         (goto-char beg)
         (insert contents)
-        (delete-char (- end beg))
-        ))))
+        (delete-char (- end beg))))))
 
 (defvar mf--mirror-indicator "| ")
 (add-text-properties
