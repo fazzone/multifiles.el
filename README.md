@@ -14,7 +14,7 @@ An initial attempt at "multifiles" as defined
 
 This mode is designed to allow you to edit *functions* - as opposed to the conventional way of editing *files*.
 It works by creating copies of forms which are linked bidirectionally with their definition in a source file buffer.
-Edits to either the original defintion apply to the mirror, and edits to the mirror actually modify the backing buffer.
+Edits to the original defintion apply to the mirror, and edits to the mirror actually modify the backing buffer.
 
 To add a mirror of the current top-level form to the multifile buffer, use `M-x mf--mirror-defun`.
 That is mainly only useful for starting a session.  Once you are editing the mirrored form, `mf--pull-definition`  
@@ -41,6 +41,8 @@ Loading the edited definitions into your repl can be tricky. The cider functions
 eval inline tend to break things, so you might want to use the cider functions that pprint their result to a popup buffer.
 This means that the metadata of the def will say it was defined in the multifile buffer, which can be annoying 
 if you get an exception, for example, becuase that same location may now be showing a different thing.
+So you might just want to use `C-c p g` to go to the original definition and load that instead.
+
 
 Another unfortunate aspect of a mode like this is that it tends to confuse undo. Undo within a mirror is remapped to undo within the region defined by the mirror.
 This is supposed to behave as if you have independent undo for each form but it is very fragile and especially does not like when you
