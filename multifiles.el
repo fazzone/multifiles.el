@@ -88,7 +88,9 @@
   (let* ((varinfo (cider-var-info sym))
 	 (file (nrepl-dict-get varinfo "file"))
 	 (line (nrepl-dict-get varinfo "line"))
-	 (name (nrepl-dict-get varinfo "name"))
+	 (name (or
+		(nrepl-dict-get varinfo "name")
+		(error (format "Can't get info for %s.  Is the ns loaded?" sym))))
 	 ;;sometimes cider--find-buffer-for-file doesn't work the first time?
 	 (defbuf (or
 		  (cider--find-buffer-for-file file)
