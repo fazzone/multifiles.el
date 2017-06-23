@@ -37,6 +37,28 @@
 (defvar mf--changed-overlays nil)
 (make-variable-buffer-local 'mf--changed-overlays)
 
+(defun mf--defun-at-point (&optional bounds)
+  (save-excursion (while (not (save-excursion (backward-up-list 1 't) (looking-at "(comment")))
+		    (backward-up-list 1 't))
+		  (let ((begin (point)))
+		    (clojure-forward-logical-sexp)
+		    (funcall (if bounds #'list #'buffer-substring-no-properties) begin (point)))))
+
+(defun mf--mirror-defun ()
+  "Mirror the top-level form at point in the multifile buffer.  Useful for starting a multifile session."
+  (interactive)
+  (when (not cider-mode)
+    (error "cider connection required"))
+  (let ((rgn (mf--defun-at-point t)))
+    (mf/mirror-region-in-multifile (car rgn) (cadr rgn))))
+
+(defun mf--pull-definition (&optional mirror)
+  "Add a mirror of the definition of the form at point to the bottom of the multifile buffer."
+  (interactive "P")
+  (if (or mirror (string= "*multifile*" (buffer-name)))
+      (mirror-definition (sexp-at-point))
+    (cider-find-var)))
+
 (defun mf--adv-cider-current-ns (origfn &rest args)
   "Allows cider functions to work in the namespace of the code overlay at point"
   (let ((bbuf (-some-> (overlays-at (point))
@@ -141,8 +163,8 @@
     (error "Undo in no overlay is probably not what you want")))
 
 (define-key multifiles-minor-mode-map [remap undo] 'mf--limited-undo)
-
 (define-key multifiles-minor-mode-map (vector 'remap 'save-buffer) 'mf/save-original-buffers)
+(define-key multifiles-minor-mode-map (kbd "M-z") 'mf--pull-definition)
 
 (defun mf/save-original-buffers ()
   (interactive)
