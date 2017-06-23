@@ -38,8 +38,8 @@
 (make-variable-buffer-local 'mf--changed-overlays)
 
 (defun mf--defun-at-point (&optional bounds)
-  (save-excursion (while (not (save-excursion (backward-up-list 1 't) (looking-at "(comment")))
-		    (backward-up-list 1 't))
+  (save-excursion (while (condition-case nil
+			     (prog1 t (backward-up-list 1 t)) (error nil)))
 		  (let ((begin (point)))
 		    (clojure-forward-logical-sexp)
 		    (funcall (if bounds #'list #'buffer-substring-no-properties) begin (point)))))
