@@ -37,6 +37,17 @@
 (defvar mf--changed-overlays nil)
 (make-variable-buffer-local 'mf--changed-overlays)
 
+(defun mf--adv-cider-current-ns (origfn &rest args)
+  "Allows cider functions to work in the namespace of the code overlay at point"
+  (let ((bbuf (-some-> (overlays-at (point))
+		       car
+		       (overlay-get 'backing-buffer))))
+    (if bbuf
+	(with-current-buffer bbuf (funcall origfn))
+      (funcall origfn))))
+
+(advice-add 'cider-current-ns :around #'mf--adv-cider-current-ns)
+
 (defun delete-orphan-overlays ()
   (--each (overlays-in (point-min) (point-max))
     (-when-let (twin (overlay-get it 'twin))
