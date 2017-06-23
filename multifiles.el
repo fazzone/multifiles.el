@@ -40,12 +40,52 @@
 (defun delete-orphan-overlays ()
   (--each (overlays-in (point-min) (point-max))
     (-when-let (twin (overlay-get it 'twin))
-      (when (overlay-buffer twin)
+      (when (null (overlay-buffer twin))
 	(delete-overlay it)))))
 
 (defun clear-garbage-overlays ()
   ;;remove any unlinked overlays from the buffer and our data structures
   (setq mf--changed-overlays (-filter #'overlay-buffer mf--changed-overlays)))
+
+(defun fancify (str width)
+  (let ((bar (make-string (/ (- width (length str)) 2) ?=)))
+    (concat ";; " bar " " str " " bar)))
+
+(defun mirror-definition (sym &optional right-here)
+  (let* ((varinfo (cider-var-info sym))
+	 (file (nrepl-dict-get varinfo "file"))
+	 (line (nrepl-dict-get varinfo "line"))
+	 (name (nrepl-dict-get varinfo "name"))
+	 ;;sometimes cider--find-buffer-for-file doesn't work the first time?
+	 (defbuf (or
+		  (cider--find-buffer-for-file file)
+		  (cider--find-buffer-for-file file)
+		  (error (format "Can't find buffer for %s" file))))
+	 (qualname (format "%s/%s"
+			   (with-current-buffer defbuf (cider-current-ns))
+			   name))
+	 (def-form-bounds (with-current-buffer defbuf
+			    (save-excursion
+			      (goto-char (point-min))
+			      (forward-line (- line 1))
+			      (list (point) (progn (forward-sexp) (point)))))))
+
+    (setq first-mirror (null (get-buffer "*multifile*")))
+    (when first-mirror
+      (let ((mode major-mode))
+        (with-current-buffer (get-buffer-create "*multifile*")
+          (funcall mode)
+          (multifiles-minor-mode 1))))
+    (prog1
+        (with-current-buffer (get-buffer-create "*multifile*")
+          (save-excursion
+            (mf--add-mirror
+             defbuf
+             (car def-form-bounds)
+             (cadr def-form-bounds)
+             (fancify qualname 80)
+             right-here)))
+      (when first-mirror (switch-to-buffer-other-window "*multifile*")))))
 
 (defun mf/mirror-region-in-multifile (beg end &optional multifile-buffer &optional heading)
   (interactive (list (region-beginning) (region-end)
@@ -126,6 +166,17 @@
     (beginning-of-line)
     (delete-region (point) (line-end-position))))
 
+;;pretty hacky - clojure-mode sexp movement does not work with fully qualified names (it chokes on the dots)
+(defun mf--symbol-from-header ()
+  (beginning-of-line)
+  (search-forward "= ")
+  (let ((name-begin (point))
+        (name-end (progn
+                    (search-forward " =")
+                    (backward-char 2)
+                    (point))))
+    (buffer-substring-no-properties name-begin name-end)))
+
 ;;delete/resurrect the mirror below this header
 (defun mf--header-cycle ()
   (interactive)
@@ -136,17 +187,16 @@
           (mf--remove-mirror mirror)
           (overlay-put o 'mirror nil))
       (save-excursion
-        (beginning-of-line)
-        (search-forward "/")
-        (overlay-put o 'mirror (mirror-definition t))))))
+        (overlay-put o 'mirror (mirror-definition (mf--symbol-from-header) t))
+        (overlay-put (overlay-get o 'mirror) 'header o)))))
 
 (defun mf--header-next ()
   (interactive)
   (let ((bol (save-excursion (beginning-of-line) (point))))
     (when (= bol (point))
       (forward-char))
-    (when (search-forward ";; ==" nil t)
-      (beginning-of-line))))
+    (search-forward ";; ==" nil t)
+    (beginning-of-line)))
 
 (defun mf--header-prev ()
   (interactive)
@@ -255,6 +305,8 @@
       (mf--remove-mirror o)))
 
   (when (and after? (not (null (overlay-start o))))
+    (when (not (mf--is-original o))
+      (overlay-put o 'line-prefix mf--mirror-changed-indicator))
     (add-to-list 'mf--changed-overlays o)))
 
 (defun mf---removed-entire-overlay ()
@@ -291,11 +343,13 @@
 (defun mf--update-twin (o)
   (let* ((beg (overlay-start o))
          (end (overlay-end o))
-         (contents (buffer-substring beg end))
+         (contents (buffer-substring-no-properties beg end))
          (twin (overlay-get o 'twin))
          (buffer (overlay-buffer twin))
          (beg (overlay-start twin))
          (end (overlay-end twin)))
+    (when (not (mf--is-original o))
+      (overlay-put o 'line-prefix mf--mirror-indicator))
     (with-current-buffer buffer
       (save-excursion
         (goto-char beg)
@@ -308,6 +362,13 @@
  `(face (:foreground ,(format "#%02x%02x%02x" 128 128 128)
                      :background ,(format "#%02x%02x%02x" 128 128 128)))
  mf--mirror-indicator)
+
+(defvar mf--mirror-changed-indicator "| ")
+(add-text-properties
+ 0 1
+ `(face (:foreground ,(format "#%02x%02x%02x" 1 1 128)
+                     :background ,(format "#%02x%02x%02x" 1 1 128)))
+ mf--mirror-changed-indicator)
 
 (provide 'multifiles)
 
